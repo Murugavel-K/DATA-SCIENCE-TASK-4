@@ -1,0 +1,140 @@
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import matplotlib.pyplot as plt
+import numpy as np
+from fastapi import FastAPI, UploadFile, File
+from pydantic import BaseModel
+from typing import List
+import uvicorn
+import io
+from PIL import Image
+import numpy as np
+from pulp import LpMaximize, LpProblem, LpVariable, lpSum
+
+app = FastAPI()
+
+# Load and preprocess the dataset (CIFAR-10 as an example)
+def load_and_preprocess_data():
+    (X_train, y_train), (X_test, y_test) = tf.keras.datasets.cifar10.load_data()
+
+    # Normalize the images to the range [0, 1]
+    X_train = X_train / 255.0
+    X_test = X_test / 255.0
+
+    # One-hot encode the labels
+    y_train = tf.keras.utils.to_categorical(y_train, 10)
+    y_test = tf.keras.utils.to_categorical(y_test, 10)
+
+    return X_train, X_test, y_train, y_test
+
+# Build the CNN model
+def build_model():
+    model = Sequential([
+        Conv2D(32, (3, 3), activation='relu', input_shape=(32, 32, 3)),
+        MaxPooling2D((2, 2)),
+        Conv2D(64, (3, 3), activation='relu'),
+        MaxPooling2D((2, 2)),
+        Conv2D(128, (3, 3), activation='relu'),
+        MaxPooling2D((2, 2)),
+        Flatten(),
+        Dense(128, activation='relu'),
+        Dropout(0.5),
+        Dense(10, activation='softmax')
+    ])
+
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+# Train the model
+def train_model(model, X_train, y_train, X_test, y_test):
+    history = model.fit(X_train, y_train, epochs=10, batch_size=64, validation_data=(X_test, y_test))
+    return history
+
+# Plot training results
+def plot_training_results(history):
+    plt.figure(figsize=(12, 4))
+
+    # Plot training and validation accuracy
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Train Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    plt.title('Model Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    # Plot training and validation loss
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Train Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Model Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.show()
+
+# Solve an optimization problem using PuLP
+def solve_optimization_problem():
+    # Define the problem
+    problem = LpProblem("Maximize_Profit", LpMaximize)
+
+    # Define decision variables
+    x = LpVariable("x", lowBound=0, cat="Continuous")
+    y = LpVariable("y", lowBound=0, cat="Continuous")
+
+    # Objective function
+    problem += 50 * x + 40 * y, "Total Profit"
+
+    # Constraints
+    problem += 2 * x + y <= 100, "Labor Constraint"
+    problem += x + 2 * y <= 80, "Material Constraint"
+
+    # Solve the problem
+    problem.solve()
+
+    # Extract results
+    solution = {"x": x.varValue, "y": y.varValue, "objective": problem.objective.value()}
+    print("Optimization Solution:", solution)
+    return solution
+
+# Main function to execute the image classification pipeline and optimization problem
+def main():
+    X_train, X_test, y_train, y_test = load_and_preprocess_data()
+    model = build_model()
+    history = train_model(model, X_train, y_train, X_test, y_test)
+    plot_training_results(history)
+    print("Training complete. Model evaluation on test data:")
+    test_loss, test_accuracy = model.evaluate(X_test, y_test)
+    print(f"Test Loss: {test_loss}, Test Accuracy: {test_accuracy}")
+
+    # Save the trained model for API usage
+    model.save("image_classification_model.h5")
+
+    # Solve the optimization problem
+    solve_optimization_problem()
+
+# API Route to predict image class
+@app.post("/predict")
+async def predict_image(file: UploadFile = File(...)):
+    # Load the model
+    model = tf.keras.models.load_model("image_classification_model.h5")
+
+    # Read image file and preprocess
+    image = Image.open(io.BytesIO(await file.read())).resize((32, 32))
+    image_array = np.array(image) / 255.0
+    image_array = np.expand_dims(image_array, axis=0)
+
+    # Predict the class
+    predictions = model.predict(image_array)
+    predicted_class = np.argmax(predictions, axis=1)[0]
+
+    return {"predicted_class": int(predicted_class)}
+
+# Execute the pipeline if the script is run directly
+if __name__ == "__main__":
+    main()
+    # Run the FastAPI server
+    uvicorn.run(app, host="0.0.0.0", port=8000)
